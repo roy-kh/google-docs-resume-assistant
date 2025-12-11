@@ -1,6 +1,6 @@
 # Resume Assistant for Google Docs
 
-A quick, simple tool to personalize resumes from inside Google Docs, via one UI, instead of copy/pasting into ChatGPT and manually reapplying changes.
+A quick, simple tool to _personalize_ resumes from inside Google Docs, via one UI, instead of copy/pasting into ChatGPT and manually reapplying changes.
 
 ## What it does
 - Sidebar: paste a job description and get tailored suggestions inserted into your Doc.
@@ -8,7 +8,7 @@ A quick, simple tool to personalize resumes from inside Google Docs, via one UI,
 - Formatting preserved: replacements keep your bold/italic/colors.
 
 ## Setup (bound script)
-1) Open your resume in Google Docs.
+1) Open your generalized resume in Google Docs.
 2) Extensions → Apps Script (this creates a bound project).
 3) Replace the default files with `Code.gs` and `sidebar.html` from this repo.
 4) In `Code.gs`, set your key:  

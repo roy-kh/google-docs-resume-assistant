@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 15px;
+      margin: 0;
+    }
+    h3 {
+      margin-top: 0;
+      color: #1a73e8;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    textarea {
+      width: 100%;
+      height: 120px;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-family: Arial, sans-serif;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    button {
+      background-color: #1a73e8;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-top: 10px;
+      width: 100%;
+    }
+    button:hover {
+      background-color: #1557b0;
+    }
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #ddd;
+      margin: 20px 0;
+    }
+    .status {
+      margin-top: 10px;
+      padding: 8px;
+      border-radius: 4px;
+      display: none;
+    }
+    .status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    .status.info {
+      background-color: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+    .section {
+      margin-bottom: 20px;
+    }
+    .help-text {
+      font-size: 12px;
+      color: #666;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h3>Resume Assistant</h3>
+  
+  <div class="section">
+    <label for="jd">Job Description:</label>
+    <textarea id="jd" placeholder="Paste the job description here..."></textarea>
+    <div class="help-text">Paste the full job description, and the AI will suggest improvements to your resume.</div>
+    <button id="generateBtn" onclick="sendJD()">Generate Suggestions</button>
+  </div>
+  
+  <div id="status" class="status"></div>
+  
+  <hr>
+  
+  <div class="section">
+    <p><b>Improve Selected Text</b></p>
+    <div class="help-text">Select any text in your resume and click below to improve it.</div>
+    <button id="improveBtn" onclick="improveSelected()">Improve Selection</button>
+  </div>
+  
+  <hr>
+  
+  <div class="section">
+    <p><b>Troubleshooting</b></p>
+    <div class="help-text">If you get permission errors, try these steps:</div>
+    <button onclick="triggerAuth()" style="background-color: #ea4335; margin-bottom: 10px;">Check Authorization</button>
+    <button onclick="runDiagnostic()" style="background-color: #fbbc04; margin-bottom: 10px;">Run Diagnostic</button>
+    <div id="authInstructions" style="display: none; margin-top: 10px; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; font-size: 12px;">
+      <strong>To authorize the script:</strong><br>
+      1. Go to <strong>Extensions → Apps Script</strong><br>
+      2. In the Apps Script editor, look for a <strong>🔒 lock icon</strong> or <strong>"Review Permissions"</strong> button at the top<br>
+      3. Click it and authorize the script<br>
+      4. OR: Select <code>testAuthorization</code> from the function dropdown and click Run (▶️)<br>
+      5. Click "Review Permissions" when prompted<br>
+      6. Come back here and try again
+    </div>
+  </div>
+  
+  <script>
+    // Check authorization when sidebar loads
+    window.onload = function() {
+      // Try to trigger authorization from sidebar context
+      // If not authorized, Google will show authorization dialog automatically
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success && result.hasKey) {
+            showStatus("✅ Ready to use!", "success");
+            setTimeout(() => {
+              document.getElementById("status").style.display = "none";
+            }, 2000);
+          } else if (result.success && !result.hasKey) {
+            showStatus("⚠️ API key not found. Please set OPENAI_KEY in Script Properties.", "error");
+          }
+        })
+        .withFailureHandler(function(error) {
+          // If authorization fails, Google should show dialog automatically
+          // But if it doesn't, show instructions
+          if (error.message && (error.message.includes("PERMISSION_DENIED") || error.message.includes("authorize"))) {
+            showStatus("⚠️ Look for authorization dialog! If none appears, see instructions below.", "error");
+            document.getElementById("authInstructions").style.display = "block";
+          } else {
+            // This might be the authorization dialog trigger - don't show error yet
+            console.log("Authorization check:", error);
+          }
+        })
+        .triggerAuthorizationFromSidebar();
+    }
+    
+    function showStatus(message, type) {
+      const statusDiv = document.getElementById("status");
+      statusDiv.textContent = message;
+      statusDiv.className = "status " + type;
+      statusDiv.style.display = "block";
+      
+      if (type === "success") {
+        setTimeout(() => {
+          statusDiv.style.display = "none";
+        }, 3000);
+      }
+    }
+    
+    function setLoading(buttonId, isLoading) {
+      const btn = document.getElementById(buttonId);
+      btn.disabled = isLoading;
+      if (isLoading) {
+        btn.textContent = "Processing...";
+      } else {
+        if (buttonId === "generateBtn") {
+          btn.textContent = "Generate Suggestions";
+        } else {
+          btn.textContent = "Improve Selection";
+        }
+      }
+    }
+    
+    function sendJD() {
+      const jd = document.getElementById("jd").value.trim();
+      
+      if (!jd) {
+        showStatus("Please enter a job description", "error");
+        return;
+      }
+      
+      setLoading("generateBtn", true);
+      showStatus("Analyzing resume and job description...", "info");
+      
+      google.script.run
+        .withSuccessHandler((result) => {
+          setLoading("generateBtn", false);
+          if (result && result.count > 0) {
+            showStatus(`Successfully applied ${result.count} suggestion(s) to your resume!`, "success");
+            document.getElementById("jd").value = "";
+          } else {
+            showStatus("Suggestions generated but none could be applied. Check the document for details.", "info");
+          }
+        })
+        .withFailureHandler((error) => {
+          setLoading("generateBtn", false);
+          console.error("processJobDescription error:", error);
+          const errorMsg = error.message || error.toString() || "Unknown error";
+          
+          if (errorMsg.includes("PERMISSION_DENIED") || errorMsg.includes("authorization") || errorMsg.includes("authorize")) {
+            showStatus("⚠️ Authorization needed. Check Apps Script execution log for details.", "error");
+            document.getElementById("authInstructions").style.display = "block";
+          } else if (errorMsg.includes("Cannot access document")) {
+            showStatus("⚠️ Cannot access document from sidebar. Try using menu functions instead.", "error");
+          } else {
+            showStatus("Error: " + errorMsg, "error");
+          }
+          
+          alert("Error: " + errorMsg + "\n\nCheck Apps Script execution log (View > Execution log) for details.");
+        })
+        .processJobDescription(jd);
+    }
+  
+    function improveSelected() {
+      setLoading("improveBtn", true);
+      showStatus("Improving selected text...", "info");
+      
+      google.script.run
+        .withSuccessHandler(() => {
+          setLoading("improveBtn", false);
+          showStatus("Text improved successfully!", "success");
+        })
+        .withFailureHandler((error) => {
+          setLoading("improveBtn", false);
+          if (error.message && (error.message.includes("PERMISSION_DENIED") || error.message.includes("authorization") || error.message.includes("authorize"))) {
+            showStatus("⚠️ Authorization dialog should appear! Please authorize and try again.", "error");
+            document.getElementById("authInstructions").style.display = "block";
+          } else {
+            showStatus("Error: " + error.message, "error");
+          }
+        })
+        .improveSelection();
+    }
+    
+    function triggerAuth() {
+      showStatus("Checking authorization... Look for authorization dialog!", "info");
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            showStatus("✅ " + result.message, "success");
+            document.getElementById("authInstructions").style.display = "none";
+          } else {
+            showStatus("❌ " + result.message, "error");
+            document.getElementById("authInstructions").style.display = "block";
+          }
+        })
+        .withFailureHandler(function(error) {
+          console.error("triggerAuthorizationFromSidebar error:", error);
+          const errorMsg = error.message || error.toString() || "Unknown error";
+          
+          if (errorMsg.includes("PERMISSION_DENIED") || errorMsg.includes("authorization")) {
+            showStatus("⚠️ Authorization needed. Check Apps Script execution log.", "error");
+            document.getElementById("authInstructions").style.display = "block";
+          } else if (errorMsg.includes("Cannot access document")) {
+            showStatus("⚠️ Cannot access document from sidebar. This is a known limitation.", "error");
+          } else {
+            showStatus("Error: " + errorMsg, "error");
+          }
+          
+          alert("Error: " + errorMsg + "\n\nCheck Apps Script execution log (View > Execution log) for details.");
+        })
+        .triggerAuthorizationFromSidebar();
+    }
+    
+    function runDiagnostic() {
+      showStatus("Running diagnostic... Check Apps Script execution log!", "info");
+      google.script.run
+        .withSuccessHandler(function(result) {
+          let message = "Diagnostic Results:\n";
+          message += "Successes: " + result.successes.length + "\n";
+          message += "Errors: " + result.errors.length + "\n\n";
+          if (result.successes.length > 0) {
+            message += "✅ " + result.successes.join("\n✅ ") + "\n\n";
+          }
+          if (result.errors.length > 0) {
+            message += "❌ " + result.errors.join("\n❌ ");
+          }
+          alert(message + "\n\nAlso check Apps Script execution log for details.");
+          showStatus("Diagnostic complete - see popup and execution log", "info");
+        })
+        .withFailureHandler(function(error) {
+          console.error("Diagnostic error:", error);
+          alert("Diagnostic failed: " + error.message + "\n\nCheck browser console and Apps Script execution log.");
+          showStatus("Diagnostic failed - check console and execution log", "error");
+        })
+        .diagnosticCheck();
+    }
+  </script>
+</body>
+</html>

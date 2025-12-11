@@ -1,5 +1,3 @@
-# google-docs-resume-assistant
-
 # Resume Assistant for Google Docs
 
 A quick, simple tool to personalize resumes from inside Google Docs, via one UI, instead of copy/pasting into ChatGPT and manually reapplying changes.

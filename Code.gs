@@ -195,20 +195,27 @@ function processJobDescription(jdText) {
       throw new Error("Please provide a job description");
     }
 
-    const prompt = `You are a resume-editing assistant. 
-Given the base resume and the job description, provide specific, actionable improvements.
+    const prompt = `You are a resume-editing assistant. Return ONLY valid JSON (no prose). Optimize for ATS scannability, strong action verbs, and STAR-style clarity while preserving truthful, existing content. Do NOT invent new skills, tools, or experiences.
 
-IMPORTANT: Return your response as a JSON array of suggestions. Each suggestion should have:
-- "original": the exact text from the resume to replace (copy it exactly as it appears)
-- "suggestion": the improved version
-- "reason": brief explanation of why this change helps
+CRITICAL: Only suggest changes for bullets that NEED improvement. If a bullet is already strong, clear, achievement-driven, and well-written, DO NOT include it in your suggestions. Only suggest changes when there's meaningful improvement to be made (weak verbs, missing metrics, unclear impact, poor ATS alignment, etc.).
 
-Format:
+HARD RULES:
+- Do not add line breaks or new bullets.
+- Keep formatting consistent; preserve tense/person/voice.
+- If original_char_count <= 123, keep suggested_char_count <= original_char_count.
+- If original_char_count > 123, keep suggested_char_count <= original_char_count * 1.15.
+- Suggestion text must be a single line (no \\n).
+- Self-report character counts for original and suggestion (count all characters).
+- Return an EMPTY array [] if no bullets need improvement.
+
+EXPECTED JSON ARRAY FORMAT ONLY:
 [
   {
     "original": "exact text from resume",
-    "suggestion": "improved version",
-    "reason": "why this helps"
+    "suggestion": "improved version (single line, no new bullets)",
+    "reason": "why this helps (ATS/impact/clarity, truthful)",
+    "original_char_count": <number>,
+    "suggested_char_count": <number>
   }
 ]
 
@@ -216,21 +223,78 @@ BASE RESUME:
 ${resumeText}
 
 JOB DESCRIPTION:
-${jdText}
-
-Return ONLY the JSON array, no other text.`;
+${jdText}`;
 
     Logger.log("Step 4: Calling OpenAI");
     const response = callOpenAI(prompt);
     Logger.log("Step 5: Parsing suggestions");
-    const suggestions = parseSuggestions(response);
-    Logger.log("Step 6: Applying suggestions");
-    applySuggestionsToDoc(suggestions);
-    Logger.log("SUCCESS: Applied " + suggestions.length + " suggestions");
-    return { success: true, count: suggestions.length };
+    
+    let suggestions;
+    try {
+      suggestions = parseSuggestions(response);
+    } catch (parseError) {
+      Logger.log("Parse error details: " + parseError.toString());
+      // Return error info to UI instead of throwing (allows UI to show helpful message)
+      return {
+        success: false,
+        error: "parse",
+        message: parseError.message || parseError.toString(),
+        count: 0,
+        suggestions: []
+      };
+    }
+    
+    Logger.log("Step 6: Validating suggestions");
+    const validSuggestions = validateSuggestions(suggestions);
+    
+    // Step 7: Analyze match percentage and missing items
+    Logger.log("Step 7: Analyzing resume match to job description");
+    let matchAnalysis = null;
+    try {
+      matchAnalysis = analyzeResumeMatch(resumeText, jdText);
+    } catch (analysisError) {
+      Logger.log("Match analysis error (non-fatal): " + analysisError.toString());
+      // Don't fail the whole operation if analysis fails
+    }
+    
+    Logger.log("Step 8: Returning suggestions to client (no auto-apply)");
+    // Do NOT auto-apply; client will review/approve in sidebar
+    return { 
+      success: true, 
+      count: validSuggestions.length, 
+      suggestions: validSuggestions,
+      matchAnalysis: matchAnalysis
+    };
   } catch (error) {
     Logger.log("ERROR in processJobDescription: " + error.toString());
     Logger.log("Error stack: " + (error.stack || "No stack trace"));
+    throw error;
+  }
+}
+
+// Apply only the suggestions explicitly approved from the sidebar.
+function applySelectedSuggestions(selectedSuggestions) {
+  Logger.log("applySelectedSuggestions: start");
+  try {
+    if (!selectedSuggestions || !Array.isArray(selectedSuggestions) || selectedSuggestions.length === 0) {
+      throw new Error("No selected suggestions provided");
+    }
+
+    // Re-validate defensively in case client state is stale
+    const valid = validateSuggestions(selectedSuggestions);
+    if (!valid || valid.length === 0) {
+      throw new Error("No valid suggestions to apply after validation");
+    }
+
+    const result = applySuggestionsToDoc(valid);
+    Logger.log("applySelectedSuggestions: applied " + result.applied + " suggestions");
+    return { 
+      success: true, 
+      count: result.applied,
+      skipped: result.skipped || 0
+    };
+  } catch (error) {
+    Logger.log("applySelectedSuggestions ERROR: " + error.toString());
     throw error;
   }
 }
@@ -272,9 +336,7 @@ function improveSelection() {
       throw new Error("Selected text is empty");
     }
 
-    const prompt = `Rewrite this resume bullet to be stronger, concise, and achievement-driven.
-Focus on quantifiable achievements and action verbs.
-Return ONLY the improved version, no explanations.
+    const prompt = `Rewrite this resume bullet to be stronger, concise, and achievement-driven while preserving truthfulness. Do NOT add line breaks or new bullets. Keep length <= current length. Use strong action verbs, ATS-friendly phrasing, and STAR cues without inventing new skills/tools. Return ONLY the improved one-line version, no explanations.
 
 "${selectedText}"`;
 
@@ -319,21 +381,41 @@ function replaceSelectionWithFormatting(textElements, newText) {
   });
 }
 
+// Parse suggestions from OpenAI response. Throws error with details if parsing fails.
 function parseSuggestions(response) {
+  if (!response || typeof response !== "string" || response.trim() === "") {
+    throw new Error("Empty or invalid response from OpenAI. Expected JSON array.");
+  }
+
   try {
-    // Try to extract JSON from response (in case there's extra text)
+    // Try to extract JSON array from response (in case there's extra prose)
     const jsonMatch = response.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(parsed)) {
+        throw new Error("Parsed JSON is not an array. Expected array of suggestion objects.");
+      }
+      return parsed;
     }
-    return JSON.parse(response);
+    
+    // Try parsing entire response as JSON
+    const parsed = JSON.parse(response);
+    if (!Array.isArray(parsed)) {
+      throw new Error("Parsed JSON is not an array. Expected array of suggestion objects.");
+    }
+    return parsed;
   } catch (error) {
     Logger.log("Error parsing suggestions: " + error.toString());
-    // Fallback: try to parse as simple text suggestions
-    return [];
+    Logger.log("Response content (first 500 chars): " + response.substring(0, 500));
+    
+    // Fail loudly with detailed error message
+    const errorMsg = error.message || error.toString();
+    throw new Error(`Failed to parse suggestions as JSON: ${errorMsg}. Response may not be valid JSON or may be missing the expected array format.`);
   }
 }
 
+// Apply suggestions to document. Operates on text elements only (not paragraphs) to preserve structure.
+// Handles single text-element matches; skips if text spans multiple elements (edge case).
 function applySuggestionsToDoc(suggestions) {
   if (!suggestions || suggestions.length === 0) {
     throw new Error("No suggestions to apply");
@@ -342,48 +424,237 @@ function applySuggestionsToDoc(suggestions) {
   const doc = DocumentApp.getActiveDocument();
   const body = doc.getBody();
   let appliedCount = 0;
+  const skippedReasons = [];
   
-  suggestions.forEach(suggestion => {
+  suggestions.forEach((suggestion, index) => {
     try {
       const original = suggestion.original;
       const replacement = suggestion.suggestion;
       
-      if (!original || !replacement) return;
-      
-      const found = body.findText(original);
-      if (found) {
-        const element = found.getElement();
-        if (element.getType() === DocumentApp.ElementType.TEXT) {
-          const textElement = element.asText();
-          const start = found.getStartOffset();
-          const end = found.getEndOffsetInclusive();
-          
-          // Get formatting from original text
-          const attributes = textElement.getAttributes(start);
-          
-          // Replace text
-          textElement.deleteText(start, end);
-          textElement.insertText(start, replacement);
-          
-          // Apply formatting to new text
-          const newEnd = start + replacement.length - 1;
-          Object.keys(attributes).forEach(key => {
-            if (attributes[key] !== null) {
-              textElement.setAttributes(start, newEnd, { [key]: attributes[key] });
-            }
-          });
-          
-          appliedCount++;
-        }
+      if (!original || !replacement) {
+        skippedReasons.push(`Suggestion ${index + 1}: Missing original or suggestion text`);
+        return;
       }
+      
+      // Try exact match first (most common case)
+      let found = body.findText(original);
+      
+      // If not found, try with normalized whitespace (handles minor formatting differences)
+      if (!found) {
+        const normalized = original.replace(/\s+/g, " ").trim();
+        found = body.findText(normalized);
+      }
+      
+      if (!found) {
+        const reason = `Suggestion ${index + 1}: Text not found in document. Original: "${original.substring(0, 50)}..."`;
+        Logger.log("Skipping - " + reason);
+        skippedReasons.push(reason);
+        return;
+      }
+      
+      const element = found.getElement();
+      
+      // Only operate on TEXT elements to avoid touching paragraph structure
+      if (element.getType() !== DocumentApp.ElementType.TEXT) {
+        const reason = `Suggestion ${index + 1}: Match found in non-text element (${element.getType()})`;
+        Logger.log("Skipping - " + reason);
+        skippedReasons.push(reason);
+        return;
+      }
+
+      const textElement = element.asText();
+      const start = found.getStartOffset();
+      const end = found.getEndOffsetInclusive();
+      
+      // Verify the matched text actually matches (findText can be fuzzy with special chars)
+      const matchedText = textElement.getText().substring(start, end + 1);
+      if (matchedText !== original && matchedText.replace(/\s+/g, " ").trim() !== original.replace(/\s+/g, " ").trim()) {
+        const reason = `Suggestion ${index + 1}: Matched text differs from original`;
+        Logger.log("Skipping - " + reason);
+        skippedReasons.push(reason);
+        return;
+      }
+
+      // Capture formatting from the ORIGINAL text range (not just start position)
+      // Sample multiple positions to detect what formatting the original text actually had
+      const originalLength = end - start + 1;
+      const samplePositions = [
+        start,
+        Math.floor(start + originalLength / 2),
+        end
+      ].filter(pos => pos >= start && pos <= end);
+      
+      // Get attributes from each sample position
+      const sampleAttributes = samplePositions.map(pos => textElement.getAttributes(pos));
+      
+      // Determine which attributes were consistently present in the original text
+      // Only preserve formatting that was actually in the original (not inherited from surrounding text)
+      const preservedAttributes = {};
+      if (sampleAttributes.length > 0) {
+        const firstAttrs = sampleAttributes[0];
+        Object.keys(firstAttrs).forEach(key => {
+          // For style attributes (ITALIC, BOLD), only preserve if ALL samples had it
+          // This prevents inheriting formatting from adjacent text
+          if (key === DocumentApp.Attribute.ITALIC || key === DocumentApp.Attribute.BOLD) {
+            const allHaveIt = sampleAttributes.every(attrs => attrs[key] === true);
+            if (allHaveIt) {
+              preservedAttributes[key] = true;
+            } else {
+              // Explicitly set to false to clear inherited formatting
+              preservedAttributes[key] = false;
+            }
+          } else {
+            // For other attributes (font, size, etc.), use the first sample's value
+            if (firstAttrs[key] !== null) {
+              preservedAttributes[key] = firstAttrs[key];
+            }
+          }
+        });
+      }
+
+      // Replace text content only; never insert paragraph breaks or modify paragraph structure
+      textElement.deleteText(start, end);
+      textElement.insertText(start, replacement);
+
+      // Apply only the formatting that was in the original text (prevents inheriting italics from above)
+      const newEnd = start + replacement.length - 1;
+      Object.keys(preservedAttributes).forEach(key => {
+        textElement.setAttributes(start, newEnd, { [key]: preservedAttributes[key] });
+      });
+
+      appliedCount++;
+      Logger.log(`Applied suggestion ${index + 1}: "${original.substring(0, 30)}..." -> "${replacement.substring(0, 30)}..."`);
     } catch (error) {
-      Logger.log("Error applying suggestion: " + error.toString());
+      const reason = `Suggestion ${index + 1}: Error during application - ${error.toString()}`;
+      Logger.log("Error applying suggestion: " + reason);
+      skippedReasons.push(reason);
     }
   });
   
-  if (appliedCount === 0) {
-    throw new Error("Could not find any matching text to replace. Make sure the original text matches exactly.");
+  // Log summary
+  if (skippedReasons.length > 0) {
+    Logger.log(`Applied ${appliedCount}/${suggestions.length} suggestions. Skipped: ${skippedReasons.join("; ")}`);
   }
+  
+  if (appliedCount === 0) {
+    const errorMsg = skippedReasons.length > 0 
+      ? `Could not apply any suggestions. Reasons: ${skippedReasons.join("; ")}`
+      : "Could not find any matching text to replace. Make sure the original text matches exactly.";
+    throw new Error(errorMsg);
+  }
+  
+  // Return info about what was skipped (for future UI enhancement)
+  return { applied: appliedCount, skipped: skippedReasons.length };
+}
+
+// Analyze resume match to job description: returns match % and missing skills/tools.
+// Uses OpenAI to compare resume content with JD requirements.
+function analyzeResumeMatch(resumeText, jdText) {
+  Logger.log("analyzeResumeMatch: Starting analysis");
+  
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("OpenAI API key not found");
+  }
+
+  const prompt = `You are a resume analysis assistant. Analyze how well the resume matches the job description.
+
+IMPORTANT RULES:
+- Do NOT invent or suggest skills/tools that aren't explicitly mentioned in the job description.
+- Only list skills/tools that are CLEARLY stated in the job description but NOT found in the resume.
+- Be conservative: if unsure whether something is in the resume, assume it is (don't list it as missing).
+- Return ONLY valid JSON, no prose.
+
+Analyze:
+1. Overall match percentage (0-100): How well does the resume align with the job requirements?
+2. Missing skills/tools: List specific skills, technologies, or tools mentioned in the JD that are NOT present in the resume. Only include items that are explicitly mentioned in the JD.
+
+Return JSON in this exact format:
+{
+  "match_percentage": <number 0-100>,
+  "missing_items": {
+    "skills": ["skill1", "skill2"],
+    "tools": ["tool1", "tool2"],
+    "technologies": ["tech1", "tech2"]
+  },
+  "notes": "Brief explanation of match percentage (1-2 sentences)"
+}
+
+RESUME:
+${resumeText}
+
+JOB DESCRIPTION:
+${jdText}`;
+
+  try {
+    const response = callOpenAI(prompt);
+    Logger.log("analyzeResumeMatch: Got response, parsing");
+    
+    // Extract JSON from response
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("No JSON found in response");
+    }
+    
+    const analysis = JSON.parse(jsonMatch[0]);
+    
+    // Validate structure
+    if (typeof analysis.match_percentage !== "number" || analysis.match_percentage < 0 || analysis.match_percentage > 100) {
+      throw new Error("Invalid match_percentage in response");
+    }
+    
+    if (!analysis.missing_items || typeof analysis.missing_items !== "object") {
+      analysis.missing_items = { skills: [], tools: [], technologies: [] };
+    }
+    
+    Logger.log("analyzeResumeMatch: Success - " + analysis.match_percentage + "% match");
+    return analysis;
+  } catch (error) {
+    Logger.log("analyzeResumeMatch ERROR: " + error.toString());
+    throw new Error("Failed to analyze resume match: " + error.message);
+  }
+}
+
+// Validate suggestions for length and line-safety before applying.
+function validateSuggestions(suggestions) {
+  if (!suggestions || suggestions.length === 0) return [];
+  
+  const valid = [];
+  
+  suggestions.forEach((s, index) => {
+    if (!s || !s.original || !s.suggestion) {
+      Logger.log("Rejecting suggestion " + index + " (missing original/suggestion)");
+      return;
+    }
+
+    // Reject if suggestion contains line breaks
+    if (/\r|\n/.test(s.suggestion)) {
+      Logger.log("Rejecting suggestion " + index + " (contains line break)");
+      return;
+    }
+
+    // Compute/fallback counts if not provided
+    const originalCount = typeof s.original_char_count === "number" ? s.original_char_count : s.original.length;
+    const suggestedCount = typeof s.suggested_char_count === "number" ? s.suggested_char_count : s.suggestion.length;
+
+    // Enforce character rules
+    if (originalCount <= 123 && suggestedCount > originalCount) {
+      Logger.log("Rejecting suggestion " + index + " (suggestion longer than original constraint)");
+      return;
+    }
+    if (originalCount > 123 && suggestedCount > Math.floor(originalCount * 1.15)) {
+      Logger.log("Rejecting suggestion " + index + " (exceeds 115% of original)");
+      return;
+    }
+
+    valid.push({
+      ...s,
+      original_char_count: originalCount,
+      suggested_char_count: suggestedCount
+    });
+  });
+
+  return valid;
 }
 
 // Check if script is authorized - call this from sidebar first

@@ -197,7 +197,9 @@ function processJobDescription(jdText) {
 
     const prompt = `You are a resume-editing assistant. Return ONLY valid JSON (no prose). Optimize for ATS scannability, strong action verbs, and STAR-style clarity while preserving truthful, existing content. Do NOT invent new skills, tools, or experiences.
 
-CRITICAL: Only suggest changes for bullets that NEED improvement. If a bullet is already strong, clear, achievement-driven, and well-written, DO NOT include it in your suggestions. Only suggest changes when there's meaningful improvement to be made (weak verbs, missing metrics, unclear impact, poor ATS alignment, etc.).
+KEYWORD OPTIMIZATION: When improving bullets, actively incorporate relevant keywords, technologies, and terminology from the job description into existing bullets where they naturally fit and truthfully represent the candidate's experience. For example, if the JD emphasizes "Python" and a bullet mentions "scripting," consider using "Python" if it's accurate. If the JD mentions "agile methodologies" and the resume describes similar processes, use that exact terminology. This improves ATS matching without inventing new experiences.
+
+CRITICAL: Only suggest changes for bullets that NEED improvement. If a bullet is already strong, clear, achievement-driven, and well-written, DO NOT include it in your suggestions. Only suggest changes when there's meaningful improvement to be made (weak verbs, missing metrics, unclear impact, poor ATS alignment, keyword optimization opportunities, etc.).
 
 HARD RULES:
 - Do not add line breaks or new bullets.
@@ -207,13 +209,14 @@ HARD RULES:
 - Suggestion text must be a single line (no \\n).
 - Self-report character counts for original and suggestion (count all characters).
 - Return an EMPTY array [] if no bullets need improvement.
+- When incorporating JD keywords, ensure they truthfully represent the candidate's experience (don't add keywords for skills/tools not demonstrated in the resume).
 
 EXPECTED JSON ARRAY FORMAT ONLY:
 [
   {
     "original": "exact text from resume",
     "suggestion": "improved version (single line, no new bullets)",
-    "reason": "why this helps (ATS/impact/clarity, truthful)",
+    "reason": "why this helps (ATS/impact/clarity/keyword optimization, truthful)",
     "original_char_count": <number>,
     "suggested_char_count": <number>
   }

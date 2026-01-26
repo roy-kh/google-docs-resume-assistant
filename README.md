@@ -76,4 +76,3 @@ resume_editor_googledocs/
 
 ## Safety
 - Keep your API keys out of source control. Use the placeholders in `Code.gs` or set Script Properties in your own copy.
-
